@@ -18,106 +18,78 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.DefaultParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
 import org.apache.commons.exec.CommandLine;
 import org.apache.commons.exec.DefaultExecutor;
 import org.apache.commons.exec.ExecuteWatchdog;
+import org.apache.commons.exec.ProcessDestroyer;
+import org.apache.commons.exec.ShutdownHookProcessDestroyer;
+import org.javatuples.Pair;
 
 public class Nepenthes{
-	static boolean simulate = true;
-	static String fileNameSuffix;
-	static String locationPrefix = "/Users/vkrishnan/Desktop/dustbin/";
-	static String utcPrefix = "utc: ";
-	static String end= "#end";
+
+	static String archivesBase = ConfigManager.getSmirfMap().get("ARCHIVES_BASE");
+	static String smirfBase = ConfigManager.getSmirfMap().get("SMIRF_BASE");
+
+	static boolean simulate = Boolean.parseBoolean( ConfigManager.getSmirfMap().get("SIMULATE"));
+
+	static String utcPrefix = ConfigManager.getSmirfMap().get("NEPENTHES_UTC_PREFIX");
+	static String end= ConfigManager.getSmirfMap().get("NEPENTHES_END");
+
+	static Integer basePort = Integer.parseInt(ConfigManager.getMopsrMap().get("SMIRF_NEPENTHES_SERVER"));
+
+
+	static String fileNameSuffix = ConfigManager.getSmirfMap().get("POINTS_FILE_EXT");
+
 	static Integer server;
-	static Integer basePort = 23000;
-	static Integer MAX_PEASOUP_JOBS = 3;
+	static Integer MAX_SMIRFSOUP_JOBS = 3;
 
 	static LinkedList<String> utcsToSearch = new LinkedList<>();
-	static Map<String, MyExecuteResultHandler> runningSMIRFSoups = new HashMap<>();
+	static Pair<String, MyExecuteResultHandler> runningSMIRFSoup = null;
+	static ProcessDestroyer processDestroyer = new ShutdownHookProcessDestroyer();
+
 	static private boolean shutdown = false;
 
-	static Thread startThread = new Thread(new Runnable() {
-
-		@Override
-		public void run() {
-			while(!shutdown){
-				synchronized (utcsToSearch) {
-					for(Iterator<String> iterator = utcsToSearch.iterator(); iterator.hasNext();){
-						MyExecuteResultHandler resultHandler = null;
-						try{
-							if(runningSMIRFSoups.size() > 3 ){
-								// log overload error
-								continue;
-							}
-							String utc = iterator.next();
-							if(runningSMIRFSoups.get(utc)!=null) {
-								// log duplicate as error
-								iterator.remove();
-								continue;
-							}
-
-							resultHandler = startSMIRFSoupForUTC(utc);
-							synchronized (runningSMIRFSoups) {
-								runningSMIRFSoups.put(utc, resultHandler);
-							}
-							iterator.remove();
-						} catch (Exception e) {
-							e.printStackTrace();
-						}
-
-					}
-				}
-				try {
-					Thread.sleep(1000);
-				} catch (InterruptedException e) {
-					e.printStackTrace();
-				}
-			}
-		}
-	});
 	
-	static Thread monitorThread = new Thread( new Runnable() {
+	public static void main(String[] args) throws UnknownHostException, ParseException {
 
-		@Override
-		public void run() {
-			while(!shutdown){
-				synchronized (runningSMIRFSoups) {
-					Set<Entry<String, MyExecuteResultHandler>> entrySet = runningSMIRFSoups.entrySet();
+		org.apache.commons.cli.CommandLine line;
+		CommandLineParser parser = new DefaultParser();
 
-					for(Iterator<Entry<String, MyExecuteResultHandler>> iterator = entrySet.iterator(); iterator.hasNext();){
-						Entry<String, MyExecuteResultHandler> entry = iterator.next();
-						MyExecuteResultHandler resultHandler = entry.getValue();
-						if(resultHandler.isComplete()) iterator.remove();
-					}
+		Options options = new Options();
+		Option hostOption = new Option("h", "host", true, " pretend as host");
 
+		options.addOption(hostOption);
+		line = parser.parse(options, args);
 
+		/***
+		 *  get host name and get the server number. Assumes the only numbers in the host name is the server number. 
+		 *  eg: mpsr-bf08.obs.molonglo.local returns 08 as the server name.
+		 */
 
-				}
-			}
+		String hostname = Inet4Address.getLocalHost().getHostName();
 
-		}
-	});
+		if(simulate  && hasOption(line, hostOption)) hostname = getValue(line, hostOption);
 
-	
-	
+		if(hostname.contains(".")) hostname = hostname.substring(0,hostname.indexOf("."));
 
-	public static void main(String[] args) throws UnknownHostException {
-
-		// Not a simulation if host contains "obs.molonglo.local"
-		simulate = simulate();
-		
-		// get host name and get the server number. Assumes the only numbers in the host name is the server number. 
-		// eg: mpsr-bf08.obs.molonglo.local returns 08 as the server name.
-		String hostname = (simulate && args.length > 0) ? args[0] : Inet4Address.getLocalHost().getHostName();
 		server = Integer.parseInt(hostname.replaceAll("\\D+", ""));
-		
-		fileNameSuffix = ".bf0"+server+".pts";
-		Integer port = basePort + (simulate ? server : 0);
+		Integer port = basePort + server;
 
-		startThread.start();
-		monitorThread.start();
+		fileNameSuffix = hostname + fileNameSuffix;
+
+		/***
+		 * start the SMIRFsouping thread.
+		 * Also add the shutdown hook to gracefully end processes.
+		 */
+		SMIRFSoupManager.start();
 		addShutDownHook();
-	
+
 
 
 		ServerSocket listener = null;
@@ -135,17 +107,17 @@ public class Nepenthes{
 
 					if(input.contains(utcPrefix)){
 
-						String utc = input.replaceAll(utcPrefix, "");
+						String utc = input.replaceAll(utcPrefix, "").trim();
 
-						String utcDir = locationPrefix+utc;
+						String utcDir = archivesBase+utc;
 						File dir = new File(utcDir);
 						if(!dir.exists()) dir.mkdir();
 
-						input = in.readLine();
-						Integer obsID = Integer.parseInt(input);
 						// ADD TO DATABASE THAT PEASOUP STARTED
 
-						String pointsFile = String.format("bf%02d.uniq.points", server);
+
+						String pointsFile = String.format(utc+fileNameSuffix);
+
 						BufferedWriter bw = new BufferedWriter(new FileWriter(new File(utcDir, pointsFile)));
 						System.err.println(" writing points file: " + pointsFile);
 
@@ -159,7 +131,9 @@ public class Nepenthes{
 						out.close();
 						in.close();
 						bw.close();
-
+						synchronized (utcsToSearch) {
+							utcsToSearch.add(utc);
+						}
 					}
 				} finally {
 					socket.close();
@@ -178,6 +152,42 @@ public class Nepenthes{
 		}
 	}
 
+	static Thread SMIRFSoupManager = new Thread(new Runnable() {
+
+		@Override
+		public void run() {
+			while(!shutdown){
+				if(runningSMIRFSoup == null || runningSMIRFSoup.getValue1().isComplete()) {
+
+					synchronized (utcsToSearch) {
+
+						if(runningSMIRFSoup != null) utcsToSearch.remove(runningSMIRFSoup.getValue0());
+
+						if( utcsToSearch.size() > 0 ) {
+							
+							String utc = utcsToSearch.get(0);
+							MyExecuteResultHandler resultHandler = null;
+							
+							try {
+								resultHandler = startSMIRFSoupForUTC(utc);
+							} catch (IOException e) {
+								e.printStackTrace();
+							}
+							runningSMIRFSoup = new Pair<String, MyExecuteResultHandler>(utc, resultHandler);
+						}
+					}
+				}
+				try {
+					Thread.sleep(1000);
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+			}
+		}
+	});
+
+
+	
 	public static void addShutDownHook(){
 		Runtime.getRuntime().addShutdownHook(new Thread( new Runnable() {
 
@@ -185,7 +195,7 @@ public class Nepenthes{
 			public void run() {
 				System.err.println("Preparing shutdown...");
 				shutdown = true;
-				while(startThread.isAlive() || monitorThread.isAlive());
+				while(SMIRFSoupManager.isAlive());
 			}
 		}));
 	}
@@ -193,16 +203,17 @@ public class Nepenthes{
 
 	public static MyExecuteResultHandler startSMIRFSoupForUTC(String utc) throws IOException{
 
-		/* SMIRFSoup <OBS DIR> <NFB> <uniq.pts file> */
 		CommandLine commandLine = new CommandLine("SMIRFSoup");
-		commandLine.addArgument(locationPrefix+utc);
-		commandLine.addArgument("360");
-		commandLine.addArgument(utc+".bf0"+server+".pts");
+		commandLine.addArgument("-i");
+		commandLine.addArgument(archivesBase+utc);
+		
 
 		ExecuteWatchdog watchDog = new ExecuteWatchdog(4 * 15 * 60 * 1000);
 
 		DefaultExecutor executor = new DefaultExecutor();
 		executor.setWatchdog(watchDog);
+		
+		executor.setProcessDestroyer(processDestroyer);
 
 		MyExecuteResultHandler resultHandler =  new MyExecuteResultHandler();
 
@@ -211,30 +222,16 @@ public class Nepenthes{
 		return resultHandler;
 	}
 
-
-
-	public static boolean simulate(){
-		try{
-			return !InetAddress.getLocalHost().getHostName().contains("obs.molonglo.local");
-		}catch (Exception e) {
-			e.printStackTrace();
-			return false;
-		}
-
+	public static void help(Options options){
+		HelpFormatter formater = new HelpFormatter();
+		formater.printHelp("Main", options);
 	}
 
-	public static Map<String,Integer> populateNepenthesServers(){
+	public static String getValue(org.apache.commons.cli.CommandLine line, Option option){
+		return line.getOptionValue(option.getOpt());
+	}
 
-		Map<String, Integer> nepenthesServers = new HashMap<>();
-		nepenthesServers.put("mpsr-bf00.obs.molonglo.local", 23000);
-		nepenthesServers.put("mpsr-bf01.obs.molonglo.local", 23001);
-		nepenthesServers.put("mpsr-bf02.obs.molonglo.local", 23002);
-		nepenthesServers.put("mpsr-bf03.obs.molonglo.local", 23003);
-		nepenthesServers.put("mpsr-bf04.obs.molonglo.local", 23004);
-		nepenthesServers.put("mpsr-bf05.obs.molonglo.local", 23005);
-		nepenthesServers.put("mpsr-bf06.obs.molonglo.local", 23006);
-		nepenthesServers.put("mpsr-bf07.obs.molonglo.local", 23007);
-		nepenthesServers.put("mpsr-bf08.obs.molonglo.local", 23008);
-		return Collections.unmodifiableMap(nepenthesServers);
+	public static boolean hasOption(org.apache.commons.cli.CommandLine line, Option option){
+		return line.hasOption(option.getOpt());
 	}
 }
