@@ -13,7 +13,7 @@ public class MyExecuteResultHandler implements ExecuteResultHandler {
 
 	@Override
 	public void onProcessComplete(int arg0) {
-		status = "success";
+		status = "success"; 
 	}
 
 	public boolean isComplete(){

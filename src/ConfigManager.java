@@ -17,12 +17,8 @@ import org.javatuples.Pair;
 
 public class ConfigManager {
 	
-	static String smirfConfigRoot = "/Users/vkrishnan/Desktop/dustbin/smirf/";
+	static String smirfConfigRoot = "/home/vivek/SMIRF/config/";
 	static String smirfConfig = smirfConfigRoot + "smirf.cfg";
-	
-	public static void main(String[] args) throws IOException {
-		loadConfigs();
-	}
 	
 	private static Map<String, Integer> nepenthesServers;
 	private static Map<String, String> smirfMap;
@@ -36,6 +32,21 @@ public class ConfigManager {
 	private static Integer numFanBeams;
 	private static String  edgeNode;
 	private static List<String> active_nodes = new ArrayList<>();
+	
+	static{
+		try {
+			
+			loadConfigs();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+	
+	public static void main(String[] args) throws IOException {
+		loadConfigs();
+	}
+	
+	
 
 	static void loadConfigs() throws IOException{
 		

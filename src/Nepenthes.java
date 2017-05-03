@@ -57,6 +57,8 @@ public class Nepenthes{
 
 	
 	public static void main(String[] args) throws UnknownHostException, ParseException {
+		
+		System.err.println("Starting Nepenthes"); 
 
 		org.apache.commons.cli.CommandLine line;
 		CommandLineParser parser = new DefaultParser();
