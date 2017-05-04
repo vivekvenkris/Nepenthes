@@ -15,7 +15,7 @@ import java.util.Map.Entry;
 import org.javatuples.Pair;
 
 
-public class ConfigManager {
+public class ConfigManager4Nepenthes {  
 	
 	static String smirfConfigRoot = "/home/vivek/SMIRF/config/";
 	static String smirfConfig = smirfConfigRoot + "smirf.cfg";
@@ -67,14 +67,15 @@ public class ConfigManager {
 			
 			String nodeName = smirfMap.get( String.format("NODE_%02d", i) );
 			
-			Integer server = Integer.parseInt(nodeName.replaceAll("\\D+", ""));
-			nepenthesServers.put(nodeName, nepenthesBasePort + server);
-			
-			if(smirfMap.get(String.format("NODE_STATE_%02d", i)).equals("active")) active_nodes.add(nodeName);
+			if(smirfMap.get(String.format("NODE_STATE_%02d", i)).equals("active")){
+				Integer server = Integer.parseInt(nodeName.replaceAll("\\D+", ""));
+				nepenthesServers.put(nodeName, nepenthesBasePort + server);
+				active_nodes.add(nodeName);
+			}
 			
 		}
-		
-		ConfigManager.nepenthesServers =  Collections.unmodifiableMap(nepenthesServers);
+				
+		ConfigManager4Nepenthes.nepenthesServers =  Collections.unmodifiableMap(nepenthesServers);
 		
 		
 		numFanBeams = Integer.parseInt(mopsrBpCornerturnMap.get("NBEAM"));
