@@ -33,31 +33,33 @@ import org.javatuples.Pair;
 
 public class Nepenthes{
 
-	static String archivesBase = ConfigManager.getSmirfMap().get("ARCHIVES_BASE");
-	static String smirfBase = ConfigManager.getSmirfMap().get("SMIRF_BASE");
+	static String archivesBase = ConfigManager4Nepenthes.getSmirfMap().get("ARCHIVES_BASE");
+	static String smirfBase = ConfigManager4Nepenthes.getSmirfMap().get("SMIRF_BASE");
 
-	static boolean simulate = Boolean.parseBoolean( ConfigManager.getSmirfMap().get("SIMULATE"));
+	static boolean simulate = Boolean.parseBoolean( ConfigManager4Nepenthes.getSmirfMap().get("SIMULATE"));
 
-	static String utcPrefix = ConfigManager.getSmirfMap().get("NEPENTHES_UTC_PREFIX");
-	static String end= ConfigManager.getSmirfMap().get("NEPENTHES_END");
+	static String utcPrefix = ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_UTC_PREFIX");
+	static String end= ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_END");
 
-	static Integer basePort = Integer.parseInt(ConfigManager.getMopsrMap().get("SMIRF_NEPENTHES_SERVER"));
+	static Integer basePort = Integer.parseInt(ConfigManager4Nepenthes.getMopsrMap().get("SMIRF_NEPENTHES_SERVER"));
 
 
-	static String fileNameSuffix = ConfigManager.getSmirfMap().get("POINTS_FILE_EXT");
+	static String fileNameSuffix = ConfigManager4Nepenthes.getSmirfMap().get("POINTS_FILE_EXT");
 
 	static Integer server;
 	static Integer MAX_SMIRFSOUP_JOBS = 3;
 
-	static LinkedList<String> utcsToSearch = new LinkedList<>();
+	static LinkedList<String> utcsToSearch = new LinkedList<>(); 
 	static Pair<String, MyExecuteResultHandler> runningSMIRFSoup = null;
 	static ProcessDestroyer processDestroyer = new ShutdownHookProcessDestroyer();
 
+	static ServerSocket listener = null;
+
 	static private boolean shutdown = false;
 
-	
+
 	public static void main(String[] args) throws UnknownHostException, ParseException {
-		
+
 		System.err.println("Starting Nepenthes"); 
 
 		org.apache.commons.cli.CommandLine line;
@@ -79,11 +81,16 @@ public class Nepenthes{
 		if(simulate  && hasOption(line, hostOption)) hostname = getValue(line, hostOption);
 
 		if(hostname.contains(".")) hostname = hostname.substring(0,hostname.indexOf("."));
+				
+		if(!ConfigManager4Nepenthes.getActive_nodes().contains(hostname)){
+			System.err.println("This node is not active in the config file. Aborting.");
+			System.exit(-1);
+		}
 
 		server = Integer.parseInt(hostname.replaceAll("\\D+", ""));
 		Integer port = basePort + server;
 
-		fileNameSuffix = hostname + fileNameSuffix;
+		fileNameSuffix = "." + hostname + fileNameSuffix;
 
 		/***
 		 * start the SMIRFsouping thread.
@@ -93,11 +100,15 @@ public class Nepenthes{
 		addShutDownHook();
 
 
+		System.err.println("Starting server on port: " + port); 
 
-		ServerSocket listener = null;
+
 		try {
 
 			listener = new ServerSocket(port);
+
+			System.err.println("Started server on port: " + port);
+
 			while (true) {
 
 				Socket socket = listener.accept();
@@ -111,17 +122,15 @@ public class Nepenthes{
 
 						String utc = input.replaceAll(utcPrefix, "").trim();
 
-						String utcDir = archivesBase+utc;
-						File dir = new File(utcDir);
-						if(!dir.exists()) dir.mkdir();
-
-						// ADD TO DATABASE THAT PEASOUP STARTED
+						File smirfUtcDir = new File(smirfBase, utc);
+						if(!smirfUtcDir.exists()) smirfUtcDir.mkdir();
 
 
-						String pointsFile = String.format(utc+fileNameSuffix);
+						String pointsFile = utc+fileNameSuffix;
 
-						BufferedWriter bw = new BufferedWriter(new FileWriter(new File(utcDir, pointsFile)));
-						System.err.println(" writing points file: " + pointsFile);
+						BufferedWriter bw = new BufferedWriter(new FileWriter(new File(smirfUtcDir, pointsFile)));
+
+						System.err.println(" writing points file: " + pointsFile + "for utc: " + utc + " at: " + smirfUtcDir);
 
 						while((input = in.readLine()) != null && !input.contains(end)){
 							bw.write(input);
@@ -133,8 +142,10 @@ public class Nepenthes{
 						out.close();
 						in.close();
 						bw.close();
+						System.err.println("Wrote file. Waiting to add UTC");
 						synchronized (utcsToSearch) {
 							utcsToSearch.add(utc);
+							System.err.println("Added UTC");
 						}
 					}
 				} finally {
@@ -159,6 +170,7 @@ public class Nepenthes{
 		@Override
 		public void run() {
 			while(!shutdown){
+				
 				if(runningSMIRFSoup == null || runningSMIRFSoup.getValue1().isComplete()) {
 
 					synchronized (utcsToSearch) {
@@ -166,10 +178,10 @@ public class Nepenthes{
 						if(runningSMIRFSoup != null) utcsToSearch.remove(runningSMIRFSoup.getValue0());
 
 						if( utcsToSearch.size() > 0 ) {
-							
+
 							String utc = utcsToSearch.get(0);
 							MyExecuteResultHandler resultHandler = null;
-							
+
 							try {
 								resultHandler = startSMIRFSoupForUTC(utc);
 							} catch (IOException e) {
@@ -189,7 +201,7 @@ public class Nepenthes{
 	});
 
 
-	
+
 	public static void addShutDownHook(){
 		Runtime.getRuntime().addShutdownHook(new Thread( new Runnable() {
 
@@ -197,6 +209,14 @@ public class Nepenthes{
 			public void run() {
 				System.err.println("Preparing shutdown...");
 				shutdown = true;
+				if(listener !=null) {
+					try {
+						listener.close();
+					} catch (IOException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+				}
 				while(SMIRFSoupManager.isAlive());
 			}
 		}));
@@ -205,16 +225,21 @@ public class Nepenthes{
 
 	public static MyExecuteResultHandler startSMIRFSoupForUTC(String utc) throws IOException{
 
-		CommandLine commandLine = new CommandLine("SMIRFSoup");
+		CommandLine commandLine = new CommandLine(ConfigManager4Nepenthes.getSmirfMap().get("SMIRF_BIN_DIR") + "/SMIRFsoup");
 		commandLine.addArgument("-i");
-		commandLine.addArgument(archivesBase+utc);
+		commandLine.addArgument(utc);
+		commandLine.addArgument("-Z");
+		commandLine.addArgument("-A");
+		commandLine.addArgument(archivesBase); 
 		
+
+		System.err.println("Running this: " + commandLine.getExecutable());
 
 		ExecuteWatchdog watchDog = new ExecuteWatchdog(4 * 15 * 60 * 1000);
 
 		DefaultExecutor executor = new DefaultExecutor();
 		executor.setWatchdog(watchDog);
-		
+
 		executor.setProcessDestroyer(processDestroyer);
 
 		MyExecuteResultHandler resultHandler =  new MyExecuteResultHandler();
