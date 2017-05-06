@@ -5,6 +5,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -15,27 +16,30 @@ import java.util.Map.Entry;
 import org.javatuples.Pair;
 
 
+
 public class ConfigManager4Nepenthes {  
 	
-	static String smirfConfigRoot = "/home/vivek/SMIRF/config/";
-	static String smirfConfig = smirfConfigRoot + "smirf.cfg";
+	static String smirfConfig = "/home/vivek/SMIRF/config/smirf.cfg";
 	
-	private static Map<String, Integer> nepenthesServers;
+	private static  Map<String, Map<Integer, Integer>>  nepenthesServers;
 	private static Map<String, String> smirfMap;
 	private static Map<String, String> mopsrMap;
 	private static Map<String, String> mopsrBpMap;
 	private static Map<String, String> mopsrBpCornerturnMap;
-	
-	
+	private static Map<String, String> mopsrBsMap;
+
 	private static Map<String, Pair<Integer, Integer > > beamBoundariesMap = new HashMap<>();
-	
+	private static List<String> thisBeamProcessorDirs = new ArrayList<>();
+	private static Map<String, List<Integer>> activeBSForNodes = new HashMap<>();
+
+	private static String 	thisHost;	
 	private static Integer numFanBeams;
 	private static String  edgeNode;
-	private static List<String> active_nodes = new ArrayList<>();
+	
 	
 	static{
 		try {
-			
+			thisHost = removeDomain(InetAddress.getLocalHost().getHostName());
 			loadConfigs();
 		} catch (IOException e) {
 			e.printStackTrace();
@@ -43,6 +47,7 @@ public class ConfigManager4Nepenthes {
 	}
 	
 	public static void main(String[] args) throws IOException {
+		thisHost = "mpsr-bf00"; removeDomain(InetAddress.getLocalHost().getHostName());
 		loadConfigs();
 	}
 	
@@ -52,29 +57,38 @@ public class ConfigManager4Nepenthes {
 		
 		smirfMap = readConfig(smirfConfig);
 		
-		mopsrMap = readConfig(smirfMap.get("MOPSR_CFG"));
-		mopsrBpMap = readConfig(smirfMap.get("MOPSR_BP_CFG"));
-		mopsrBpCornerturnMap = readConfig(smirfMap.get("MOPSR_BP_CORNERTURN_CFG"));
+		mopsrMap = readConfig( Nepenthes.createDirectoryStructure(smirfMap.get("CONFIG_ROOT"),smirfMap.get("MOPSR_CONFIG")));
+		mopsrBpMap = readConfig(Nepenthes.createDirectoryStructure(smirfMap.get("CONFIG_ROOT"),smirfMap.get("MOPSR_BP_CONFIG")));
+		mopsrBpCornerturnMap = readConfig(Nepenthes.createDirectoryStructure(smirfMap.get("CONFIG_ROOT"),smirfMap.get("MOPSR_BP_CORNERTURN_CONFIG")));
+		mopsrBsMap = readConfig(Nepenthes.createDirectoryStructure(smirfMap.get("CONFIG_ROOT"),smirfMap.get("MOPSR_BS_CONFIG")));
+		
 		
 		edgeNode = smirfMap.get("EDGE_NODE");
 				
 		Integer nepenthesBasePort = Integer.parseInt(mopsrMap.get("SMIRF_NEPENTHES_SERVER"));
-		Integer numNodes = Integer.parseInt(smirfMap.get("NUM_NODES"));
+		Integer numBS = Integer.parseInt(mopsrBsMap.get("NUM_BS"));
 		
-		 Map<String, Integer> nepenthesServers = new HashMap<>();
+		// node, bs, port
+		 Map<String, Map<Integer, Integer>> nepenthesServers = new HashMap<>();
 		
-		for(int i=0; i< numNodes; i++){
+		for(int bs=0; bs< numBS; bs++){
 			
-			String nodeName = smirfMap.get( String.format("NODE_%02d", i) );
+			String nodeName = mopsrBsMap.get( String.format("BS_%d", bs) );
 			
-			if(smirfMap.get(String.format("NODE_STATE_%02d", i)).equals("active")){
-				Integer server = Integer.parseInt(nodeName.replaceAll("\\D+", ""));
-				nepenthesServers.put(nodeName, nepenthesBasePort + server);
-				active_nodes.add(nodeName);
+			if(mopsrBsMap.get(String.format("BS_STATE_%d", bs)).equals("active")){
+								
+				Map<Integer, Integer> map = nepenthesServers.getOrDefault(nodeName, new HashMap<>());
+				map.put(bs,nepenthesBasePort + bs );
+				
+				nepenthesServers.put(nodeName, map);
+				
+				List<Integer> bsList = activeBSForNodes.getOrDefault(nodeName, new ArrayList<>());
+				bsList.add(bs);
+				activeBSForNodes.put(nodeName, bsList);
 			}
 			
 		}
-				
+						
 		ConfigManager4Nepenthes.nepenthesServers =  Collections.unmodifiableMap(nepenthesServers);
 		
 		
@@ -82,13 +96,24 @@ public class ConfigManager4Nepenthes {
 		
 		Integer numBP = Integer.parseInt(mopsrBpMap.get("NUM_BP"));
 		
-		for(String node: active_nodes){
+		for( int bp=0 ; bp< numBP; bp++ ) 
+			if( mopsrBpMap.get("BP_" + bp).equals(thisHost) || thisHost.equals(edgeNode)) 
+				thisBeamProcessorDirs.add(String.format("BP%02d", bp));
+		 
+		for(String node: activeBSForNodes.keySet()){
 			
 			List<Integer> beamProcessors = new ArrayList<>();
+			
+			if(node.equals(edgeNode)) 	{
+				beamBoundariesMap.put(node, new Pair<Integer, Integer>( 1 , numFanBeams));
+				continue;
+			}
+
 			
 			for( int bp=0 ; bp< numBP; bp++ ) if( mopsrBpMap.get("BP_" + bp).equals(node) ) beamProcessors.add(bp);
 			
 			Integer minFB = null, maxFB = null;
+			
 			for(Integer bp: beamProcessors) {
 				
 				Integer min = Integer.parseInt(mopsrBpCornerturnMap.get("BEAM_FIRST_RECV_" + bp));
@@ -153,11 +178,37 @@ public class ConfigManager4Nepenthes {
 		return Integer.parseInt(name.replaceAll("\\D+", ""));
 	}
 	
+	public static String removeDomain(String hostname){
+		return (hostname.contains("."))? hostname.split("\\.")[0]: hostname; 
+	}
+	
 	
 
-	public static Map<String, Integer> getNepenthesServers() {
+	
+
+	public static String getSmirfConfig() {
+		return smirfConfig;
+	}
+
+
+
+	public static Map<String, Map<Integer, Integer>> getNepenthesServers() {
 		return nepenthesServers;
 	}
+
+
+
+	public static Map<String, String> getMopsrBsMap() {
+		return mopsrBsMap;
+	}
+
+
+
+	public static Map<String, List<Integer>> getActiveBSForNodes() {
+		return activeBSForNodes;
+	}
+
+
 
 	public static Map<String, String> getSmirfMap() {
 		return smirfMap;
@@ -187,8 +238,16 @@ public class ConfigManager4Nepenthes {
 		return edgeNode;
 	}
 
-	public static List<String> getActive_nodes() {
-		return active_nodes;
+	
+
+	public static List<String> getThisBeamProcessorDirs() {
+		return thisBeamProcessorDirs;
+	}
+
+
+
+	public static String getThisHost() {
+		return thisHost;
 	}
 
 	
