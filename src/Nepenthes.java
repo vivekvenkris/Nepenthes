@@ -2,6 +2,7 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
+import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
@@ -10,10 +11,12 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
@@ -29,6 +32,7 @@ import org.apache.commons.exec.DefaultExecutor;
 import org.apache.commons.exec.ExecuteWatchdog;
 import org.apache.commons.exec.ProcessDestroyer;
 import org.apache.commons.exec.ShutdownHookProcessDestroyer;
+import org.apache.commons.exec.environment.EnvironmentUtils;
 import org.javatuples.Pair;
 
 public class Nepenthes{
@@ -54,22 +58,32 @@ public class Nepenthes{
 	static ProcessDestroyer processDestroyer = new ShutdownHookProcessDestroyer();
 
 	static ServerSocket listener = null;
+	static String 	thisHost = "";
+	static Integer	thisPort = -1;
+	static Integer bsID = -1;
 
 	static private boolean shutdown = false;
 
 
 	public static void main(String[] args) throws UnknownHostException, ParseException {
 
-		System.err.println("Starting Nepenthes"); 
-
 		org.apache.commons.cli.CommandLine line;
 		CommandLineParser parser = new DefaultParser();
 
 		Options options = new Options();
-		Option hostOption = new Option("h", "host", true, " pretend as host");
+		Option hostOption = new Option("H", "host", true, " pretend as host");
+		Option bsIDOption = new Option("b", "bs_id", true, " Beam stitcher id");
 
 		options.addOption(hostOption);
+		options.addOption(bsIDOption);
 		line = parser.parse(options, args);
+		
+		if(!hasOption(line, bsIDOption)){
+			log("Required option: -b <bs_id>. Aborting now");
+			System.exit(-1);
+		}
+		
+		 bsID = Integer.parseInt(getValue(line, bsIDOption));
 
 		/***
 		 *  get host name and get the server number. Assumes the only numbers in the host name is the server number. 
@@ -81,37 +95,63 @@ public class Nepenthes{
 		if(simulate  && hasOption(line, hostOption)) hostname = getValue(line, hostOption);
 
 		if(hostname.contains(".")) hostname = hostname.substring(0,hostname.indexOf("."));
+		
+		boolean found = false;
+		
+		
+		for(Entry<String, List<Integer>> entry : ConfigManager4Nepenthes.getActiveBSForNodes().entrySet()){
+			
+			String iHost = entry.getKey();
+			
+			if(entry.getValue().contains(bsID)){
 				
-		if(!ConfigManager4Nepenthes.getActive_nodes().contains(hostname)){
-			System.err.println("This node is not active in the config file. Aborting.");
-			System.exit(-1);
+				if(! iHost.equals(hostname)){
+					log("host:" , hostname , "tried to find:",bsID , "but was found in host:", iHost,". Likely problem with bs_config file. Aborting.");
+					System.exit(-1);
+				} else{
+					found = true;
+				}
+				
+			}
 		}
-
-		server = Integer.parseInt(hostname.replaceAll("\\D+", ""));
-		Integer port = basePort + server;
+		
+		if(!found)	{
+			log("This BS:", bsID," is not active in the config file on host:", hostname ,". Aborting.");
+			System.exit(0);
+		}
+		
+		Integer port = basePort + bsID;
 
 		fileNameSuffix = "." + hostname + fileNameSuffix;
+		
+		thisHost = hostname;
+		thisPort = port;
+		
+		log("Started"); 
+
 
 		/***
 		 * start the SMIRFsouping thread.
 		 * Also add the shutdown hook to gracefully end processes.
 		 */
 		SMIRFSoupManager.start();
+		log("Started SMIRFsoup thread");
+
 		addShutDownHook();
-
-
-		System.err.println("Starting server on port: " + port); 
-
+		log("Added Shutdown hook");
 
 		try {
 
 			listener = new ServerSocket(port);
 
-			System.err.println("Started server on port: " + port);
-
-			while (true) {
+			log("listening on port");
+			
+			while (!shutdown) {
 
 				Socket socket = listener.accept();
+				
+				log("Accepted new connection from " + socket.getInetAddress().getHostName());
+				
 				try {
 
 					PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
@@ -122,15 +162,16 @@ public class Nepenthes{
 
 						String utc = input.replaceAll(utcPrefix, "").trim();
 
-						File smirfUtcDir = new File(smirfBase, utc);
-						if(!smirfUtcDir.exists()) smirfUtcDir.mkdir();
+						File smirfUtcDir = new File(createDirectoryStructure(smirfBase,ConfigManager4Nepenthes.getSmirfMap().get("BS_DIR_PREFIX")+String.format("%02d", bsID),utc));
+						if(!smirfUtcDir.exists()) smirfUtcDir.mkdirs();
 
 
 						String pointsFile = utc+fileNameSuffix;
+						
+						log("writing points file: " + pointsFile + " for utc: " + utc + " at: " + smirfUtcDir);
 
 						BufferedWriter bw = new BufferedWriter(new FileWriter(new File(smirfUtcDir, pointsFile)));
 
-						System.err.println(" writing points file: " + pointsFile + "for utc: " + utc + " at: " + smirfUtcDir);
 
 						while((input = in.readLine()) != null && !input.contains(end)){
 							bw.write(input);
@@ -142,10 +183,12 @@ public class Nepenthes{
 						out.close();
 						in.close();
 						bw.close();
-						System.err.println("Wrote file. Waiting to add UTC");
+						
+						log("Wrote points file for: " + utc);
+						
 						synchronized (utcsToSearch) {
 							utcsToSearch.add(utc);
-							System.err.println("Added UTC");
+							log("Added UTC=",utc,"to queue");
 						}
 					}
 				} finally {
@@ -170,7 +213,7 @@ public class Nepenthes{
 		@Override
 		public void run() {
 			while(!shutdown){
-				
+
 				if(runningSMIRFSoup == null || runningSMIRFSoup.getValue1().isComplete()) {
 
 					synchronized (utcsToSearch) {
@@ -179,7 +222,10 @@ public class Nepenthes{
 
 						if( utcsToSearch.size() > 0 ) {
 
-							String utc = utcsToSearch.get(0);
+							String utc = utcsToSearch.getFirst();
+							
+							log("Considering",utc,"for SMIRFsouping");
+							
 							MyExecuteResultHandler resultHandler = null;
 
 							try {
@@ -207,16 +253,8 @@ public class Nepenthes{
 
 			@Override
 			public void run() {
-				System.err.println("Preparing shutdown...");
+				log("Preparing shutdown...");
 				shutdown = true;
-				if(listener !=null) {
-					try {
-						listener.close();
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
-				}
 				while(SMIRFSoupManager.isAlive());
 			}
 		}));
@@ -225,26 +263,66 @@ public class Nepenthes{
 
 	public static MyExecuteResultHandler startSMIRFSoupForUTC(String utc) throws IOException{
 
+		
+		
 		CommandLine commandLine = new CommandLine(ConfigManager4Nepenthes.getSmirfMap().get("SMIRF_BIN_DIR") + "/SMIRFsoup");
 		commandLine.addArgument("-i");
 		commandLine.addArgument(utc);
 		commandLine.addArgument("-Z");
 		commandLine.addArgument("-A");
 		commandLine.addArgument(archivesBase); 
-		
+		commandLine.addArgument("-b");
+		commandLine.addArgument(bsID+"");
 
-		System.err.println("Running this: " + commandLine.getExecutable());
+		log("Running ",commandLine.getExecutable(),"with args:" + Arrays.asList(commandLine.getArguments()));
+
+		log("Waiting for obs.completed on all BP dirs");
+
+		for(String bp: ConfigManager4Nepenthes.getThisBeamProcessorDirs()){
+			String bpDirectoryName = createDirectoryStructure(archivesBase, bp, utc, ConfigManager4Nepenthes.getSmirfMap().get("FB_DIR"));
+			File bpDir = new File(bpDirectoryName);
+			int count = 0;
+			while(true) {
+
+				try {
+					File[] files = bpDir.listFiles(new FilenameFilter() {
+
+						@Override
+						public boolean accept(File dir, String name) {
+							return name.endsWith(ConfigManager4Nepenthes.getSmirfMap().get("SMIRFSOUP_TRIGGER"));
+						}
+					});
+
+					if(files.length > 0 ) break;
+					if(shutdown) break;
+					
+					if(count++ % 10 == 0) log(bpDirectoryName + " not completed yet...");
+					
+					Thread.sleep(2000);
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+
+			}
+		}
 
 		ExecuteWatchdog watchDog = new ExecuteWatchdog(4 * 15 * 60 * 1000);
 
+		Map<String, String> env = EnvironmentUtils.getProcEnvironment();
+		
+		env.put("LD_LIBRARY_PATH",ConfigManager4Nepenthes.getSmirfMap().get("GCC_ROOT")+"/lib64:"
+								+ ConfigManager4Nepenthes.getSmirfMap().get("DEDISP_MULTI_ROOT") + "/lib:"
+								+ ConfigManager4Nepenthes.getSmirfMap().get("CUDA_ROOT") + "/lib64:"
+								+ env.getOrDefault("LD_LIBRARY_PATH", "."));
+		
 		DefaultExecutor executor = new DefaultExecutor();
 		executor.setWatchdog(watchDog);
-
+	
 		executor.setProcessDestroyer(processDestroyer);
 
 		MyExecuteResultHandler resultHandler =  new MyExecuteResultHandler();
 
-		executor.execute(commandLine, resultHandler);
+		executor.execute(commandLine, env, resultHandler);
 
 		return resultHandler;
 	}
@@ -260,5 +338,22 @@ public class Nepenthes{
 
 	public static boolean hasOption(org.apache.commons.cli.CommandLine line, Option option){
 		return line.hasOption(option.getOpt());
+	}
+	
+	public static String createDirectoryStructure(String...names){
+		String result = "";
+		for( int i=0; i< names.length; i++){
+			result += names[i];
+			if(i != names.length -1 ) result += "/";
+		}
+		return result;
+	}
+	
+	public static synchronized void log(Object...any){
+		String s = "Nepenthes on (" + thisHost + ":" + thisPort + ") : ";
+		
+		for(Object o : any) 	s += o.toString() + " ";
+		
+		System.err.println(s);
 	}
 }

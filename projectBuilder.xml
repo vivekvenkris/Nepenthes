@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project name="nepenthes" default="jar" basedir=".">
+<project name="nepenthes" default="install" basedir=".">
 	<property name="source.dir" value="src" />
 	<property name="lib.dir" value="lib" />
 	<property name="class.dir" value="bin" />
 	<property name="jar.dir" value="dist" />
 	<property name="main-class" value="Nepenthes" />
 	<property name="jar.file" value="${jar.dir}/${ant.project.name}.jar" />
+	<property name = "install.dir" value="/home/vivek/SMIRF/jars/"></property>
 
 
 	<path id="libraries.path">
@@ -25,7 +26,7 @@
 			<classpath refid="libraries.path"></classpath>
 		</javac>
 
-	</target>
+	</target> 
 
 	<target name="jar" description="Create a jar for the Nepenthes project"
 		depends="compile">
@@ -51,5 +52,14 @@
 		</jar>
 
 
+	</target>
+	
+	<target name="install" >
+		<copy file="${jar.file}" todir="${install.dir}"></copy>
+		<copy todir="${install.dir}" verbose="yes" failonerror="yes">
+			<fileset dir="${jar.dir}">
+				<include name="${jar.file}"/>
+			</fileset>
+		</copy>
 	</target>
 </project>
