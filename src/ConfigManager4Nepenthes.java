@@ -22,6 +22,8 @@ public class ConfigManager4Nepenthes {
 	static String smirfConfig = "/home/vivek/SMIRF/config/smirf.cfg";
 
 	private static  Map<String, Map<Integer, Integer>>  nepenthesServers;
+	private static  Map<String, Map<Integer, Integer>>  interNepenthesServers;
+
 	private static Map<String, String> smirfMap;
 	private static Map<String, String> mopsrMap;
 	private static Map<String, String> mopsrBpMap;
@@ -73,6 +75,8 @@ public class ConfigManager4Nepenthes {
 		edgeNode = smirfMap.get("EDGE_NODE");
 
 		Integer nepenthesBasePort = Integer.parseInt(mopsrMap.get("SMIRF_NEPENTHES_SERVER"));
+		Integer interNepenthesBasePort = Integer.parseInt(mopsrMap.get("SMIRF_INTER_NEPENTHES_SERVER"));
+
 		Integer numBS = Integer.parseInt(mopsrBsMap.get("NUM_BS"));
 		
 
@@ -97,8 +101,32 @@ public class ConfigManager4Nepenthes {
 			}
 
 		}
-
+		
 		ConfigManager4Nepenthes.nepenthesServers =  Collections.unmodifiableMap(nepenthesServers);
+
+		
+		Map<String, Map<Integer, Integer>> interNepenthesServers = new HashMap<>();
+
+		for(int bs=0; bs< numBS; bs++){
+
+			String nodeName = mopsrBsMap.get( String.format("BS_%d", bs) );
+
+			if(mopsrBsMap.get(String.format("BS_STATE_%d", bs)).equals("active")){
+
+				Map<Integer, Integer> map = interNepenthesServers.getOrDefault(nodeName, new HashMap<>());
+				map.put(bs,interNepenthesBasePort + bs );
+
+				interNepenthesServers.put(nodeName, map);
+
+				List<Integer> bsList = activeBSForNodes.getOrDefault(nodeName, new ArrayList<>());
+				bsList.add(bs);
+				activeBSForNodes.put(nodeName, bsList);
+				
+			}
+
+		}
+
+		ConfigManager4Nepenthes.interNepenthesServers =  Collections.unmodifiableMap(interNepenthesServers);
 
 
 		numFanBeams = Integer.parseInt(mopsrBpCornerturnMap.get("NBEAM"));
@@ -271,6 +299,24 @@ public class ConfigManager4Nepenthes {
 
 	public static String getThisHost() {
 		return thisHost;
+	}
+
+
+
+	public static Map<String, Map<Integer, Integer>> getInterNepenthesServers() {
+		return interNepenthesServers;
+	}
+
+
+
+	public static Map<String, Map<Integer, Pair<Integer, Integer>>> getBeamBoundariesMap() {
+		return beamBoundariesMap;
+	}
+
+
+
+	public static boolean isLoaded() {
+		return loaded;
 	}
 
 
