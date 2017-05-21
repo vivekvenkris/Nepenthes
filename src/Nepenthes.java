@@ -8,6 +8,7 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
@@ -32,6 +33,7 @@ import org.apache.commons.exec.DefaultExecutor;
 import org.apache.commons.exec.ExecuteWatchdog;
 import org.apache.commons.exec.ProcessDestroyer;
 import org.apache.commons.exec.ShutdownHookProcessDestroyer;
+import org.apache.commons.exec.Watchdog;
 import org.apache.commons.exec.environment.EnvironmentUtils;
 import org.javatuples.Pair;
 
@@ -43,22 +45,35 @@ public class Nepenthes{
 
 	static boolean simulate = Boolean.parseBoolean( ConfigManager4Nepenthes.getSmirfMap().get("SIMULATE"));
 
-	static String utcPrefix = ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_UTC_PREFIX");
-	static String end= ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_END");
+	static String utcAddPrefix = ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_UTC_PREFIX");
+	static String end= ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_END"); 
 	static String rsync= ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_RSYNC_PREFIX");
+	static String srcName = ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_SRCNAME_PREFIX");
+	static String removeUTCPrefix = ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_REMOVE_UTC_PREFIX");
+	static String restartUTCPrefix = ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_RESTART_UTC_PREFIX");
+
 
 	static Integer basePort = Integer.parseInt(ConfigManager4Nepenthes.getMopsrMap().get("SMIRF_NEPENTHES_SERVER"));
+	static Integer interNepenthesBasePort = Integer.parseInt(ConfigManager4Nepenthes.getMopsrMap().get("SMIRF_INTER_NEPENTHES_SERVER"));
+
 
 
 	static String pointsFileNameSuffix = ConfigManager4Nepenthes.getSmirfMap().get("POINTS_FILE_EXT");
 	static String rsyncFileNameSuffix = ConfigManager4Nepenthes.getSmirfMap().get("RSYNC_FILE_EXT");
+	static String srcNameFileNameSuffix = ConfigManager4Nepenthes.getSmirfMap().get("SRCNAME_FILE_EXT");
 
 	static Integer server;
 
 
 
-	static LinkedList<String> utcsToSearch = new LinkedList<>(); 
+	static final LinkedList<String> utcsToSearch = new LinkedList<>(); 
+	
 	static Pair<String, MyExecuteResultHandler> runningSMIRFSoup = null;
+	static Pair<String, ExecuteWatchdog> runningWatchDog = null;
+	
+	static final Object runningSMIRFsoupLock = new Object();
+	
+	
 	static ProcessDestroyer processDestroyer = new ShutdownHookProcessDestroyer();
 
 	static ServerSocket listener = null;
@@ -128,6 +143,7 @@ public class Nepenthes{
 
 		pointsFileNameSuffix = ".BS" + String.format("%02d", bsID)  + pointsFileNameSuffix;
 		rsyncFileNameSuffix = ".BS" + String.format("%02d", bsID) + rsyncFileNameSuffix;
+		srcNameFileNameSuffix = ".BS" + String.format("%02d", bsID) + srcNameFileNameSuffix;
 		thisHost = hostname;
 		thisPort = port;
 
@@ -140,15 +156,20 @@ public class Nepenthes{
 		 */
 		SMIRFSoupManager.start();
 		log("Started SMIRFsoup thread");
+		
+		interNepenthesServer.start();
+		log("Started inter nepenthes server");
 
 		addShutDownHook();
 		log("Added Shutdown hook");
+
+
 
 		try {
 
 			listener = new ServerSocket(port);
 
-			log("listening on port");
+			log("Nepenthes listening on port" ,port);
 
 			while (!shutdown) {
 
@@ -171,9 +192,60 @@ public class Nepenthes{
 
 					}
 
-					if(input.contains(utcPrefix)){
+					else if(input.contains(removeUTCPrefix)){
 
-						String utc = input.replaceAll(utcPrefix, "").trim();
+						String utc = input.replaceAll(removeUTCPrefix, "").trim();
+
+						String runningUTC = null;
+
+						synchronized (runningSMIRFsoupLock) {
+							if(runningSMIRFSoup!=null)
+							runningUTC =runningSMIRFSoup.getValue0();
+						}
+
+						synchronized (utcsToSearch) {
+							if(utcsToSearch.contains(utc)){
+
+								if(runningUTC!=null && runningUTC.equals(utc)){
+									out.println("Cannot remove running UTC. Please restart backend");
+								}
+								else{
+									if(utcsToSearch.remove(utc)){
+										out.println("removed UTC = " + utc);
+										System.err.println("removed UTC = " + utc);
+									}
+
+									else{
+
+										out.println("No UTC found on queue UTC = " + utc);
+										System.err.println("No UTC found on queue UTC = " + utc);
+									}
+								}
+
+							}
+						}
+
+						out.close();
+						in.close();
+
+					}
+					
+					else if(input.contains(restartUTCPrefix)){
+						
+						String utc = input.replaceAll(restartUTCPrefix, "").trim();
+						
+						synchronized (utcsToSearch) {
+							utcsToSearch.add(utc);
+							log("Readding UTC=",utc,"to queue");
+						}
+						out.close();
+						in.close();
+
+					}
+
+					else if(input.contains(utcAddPrefix)){
+
+						String utc = input.replaceAll(utcAddPrefix, "").trim();
 
 						File smirfUtcDir = new File(Utilities.createDirectoryStructure(smirfBase,ConfigManager4Nepenthes.getSmirfMap().get("BS_DIR_PREFIX")+String.format("%02d", bsID),utc));
 						if(!smirfUtcDir.exists()) smirfUtcDir.mkdirs();
@@ -182,6 +254,8 @@ public class Nepenthes{
 						String pointsFile = utc+pointsFileNameSuffix;
 
 						String rsyncFile = utc+rsyncFileNameSuffix;
+
+						String srcNameFile = utc+srcNameFileNameSuffix;
 
 						log("writing points file: " + pointsFile + " for utc: " + utc + " at: " + smirfUtcDir); 
 
@@ -197,15 +271,24 @@ public class Nepenthes{
 						bw.close();
 
 						bw = new BufferedWriter(new FileWriter(new File(smirfUtcDir, rsyncFile)));
-						while((input = in.readLine()) != null && !input.contains(end)){
-							bw.write(input);
+						while((input = in.readLine()) != null && !input.contains(srcName)){
+							bw.write(input); 
 							bw.newLine();
 							bw.flush();
 
 						}
 						bw.close();
 
-						log("Wrote points file for: " + utc);
+						bw = new  BufferedWriter(new FileWriter(new File(smirfUtcDir, srcNameFile)));
+						while((input = in.readLine()) != null && !input.contains(end)){
+							bw.write(input);
+							bw.newLine();
+							bw.flush();
+						}
+						bw.close();
+
+
+						log("Wrote points, rsync and srcname files for: " + utc);
 
 						synchronized (utcsToSearch) {
 							utcsToSearch.add(utc);
@@ -236,17 +319,40 @@ public class Nepenthes{
 
 		@Override
 		public void run() {
+
 			while(!shutdown){
 
-				if(runningSMIRFSoup == null || runningSMIRFSoup.getValue1().isComplete()) {
+				/**
+				 * If not the first run or the present run is not complete, do not do anything.
+				 */
+				boolean flag = false;
+				
+				synchronized (runningSMIRFsoupLock) {
+					flag = runningSMIRFSoup == null || runningSMIRFSoup.getValue1().isComplete();
+				}
+				/**
+				 * SMIRF is either null or complete when flag = true;
+				 */
+				if(flag) {
 
-					synchronized (utcsToSearch) {
+					/**
+					 * If run is complete, remove it and add the next UTC. If null, just add the next UTC.
+					 */
+					
+					String removeUTC = null;
+					synchronized (runningSMIRFsoupLock) {
 
 						if(runningSMIRFSoup != null && runningSMIRFSoup.getValue1().isComplete()) {
+							removeUTC = runningSMIRFSoup.getValue0();
 							System.err.println(runningSMIRFSoup.getValue0() + " " + runningSMIRFSoup.getValue1().status );
-							utcsToSearch.remove(runningSMIRFSoup.getValue0());
-							runningSMIRFSoup = null;
+							runningSMIRFSoup = null;	
 						}
+
+					}
+					if(removeUTC !=null) {
+						synchronized (utcsToSearch) {
+							utcsToSearch.remove(removeUTC);
+						} 
 					}
 
 					String nextUTC = null;
@@ -260,6 +366,75 @@ public class Nepenthes{
 
 						log("Considering",nextUTC,"for SMIRFsouping");
 
+						log("Asking other nodes for their status");
+
+						for(Entry<String, Map<Integer, Integer>> nodeBSEntry : ConfigManager4Nepenthes.getInterNepenthesServers().entrySet()){
+
+							String node = nodeBSEntry.getKey();
+
+							for(Entry<Integer, Integer> bsPortEntry : nodeBSEntry.getValue().entrySet()){
+
+								Integer port = bsPortEntry.getValue();
+								
+								if(bsPortEntry.getKey().equals(bsID)){
+									log("Skipping checking myself - ",bsID,":",port);
+									continue;
+								}
+								 
+								log("Checking BS",bsPortEntry.getKey(),"on port", port);
+
+								while(true) { 
+
+									Socket socket = null;
+
+									try {
+
+										socket = new Socket();
+										socket.connect(new InetSocketAddress(node, port),10000); 
+
+										BufferedReader in = new BufferedReader( new InputStreamReader(socket.getInputStream()));	
+
+										String utc = in.readLine();
+
+										/**
+										 * if utc is none, there is nothing running on the node, so can check the next node. Else try after 1 second.
+										 * if the utc is non-none, wait until it is none or the next utc under consideration 
+										 */
+
+										if( utc != null &&  ( utc.equals("none") || utc.equals(nextUTC) ) ) {
+											log("BS",bsPortEntry.getKey(),"had finished running previous UTC");
+											break;
+										}
+
+										else{
+
+											log("Waiting for UTC=",utc ," to end on BS", bsPortEntry.getKey());
+											Thread.sleep(1000);
+										}
+										in.close();
+										socket.close();
+									} catch (IOException | InterruptedException e) {
+										
+										e.printStackTrace();
+										
+									} finally{
+										
+										if(socket!=null)
+											try {
+												socket.close();
+											} catch (IOException e) {
+												e.printStackTrace();
+											}
+									} // try catch finally
+									
+								} // while(true)
+
+
+							} // bs-port map
+
+
+						} // node - bs - port map 
+
 						MyExecuteResultHandler resultHandler = null;
 
 						try {
@@ -267,17 +442,90 @@ public class Nepenthes{
 						} catch (IOException e) { 
 							e.printStackTrace();
 						}
-						runningSMIRFSoup = new Pair<String, MyExecuteResultHandler>(nextUTC, resultHandler);
+
+						synchronized (runningSMIRFsoupLock) {
+							runningSMIRFSoup = new Pair<String, MyExecuteResultHandler>(nextUTC, resultHandler);
+
+						}
 					}
-			} 
-			try {
-				Thread.sleep(1000);
-			} catch (InterruptedException e) {
-				e.printStackTrace();
+				} 
+				try {
+					Thread.sleep(1000);
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
 			}
 		}
-	}
-});
+	});
+
+
+
+
+	static Thread interNepenthesServer = new Thread(new Runnable() {
+
+		@Override
+		public void run() {
+
+			ServerSocket interNepenthesListener = null;
+			Integer port = interNepenthesBasePort + bsID;
+
+			try{
+
+				interNepenthesListener = new ServerSocket(port);
+
+				log("Internepenthes server for BS",bsID,"listening on port",port);
+
+				while(!shutdown){
+
+					Socket socket = null;
+
+					try{
+						
+						socket =interNepenthesListener.accept();
+						
+						log("Accepted new connection from " + socket.getInetAddress().getHostName());
+
+						PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+						synchronized (runningSMIRFsoupLock) {
+
+							if(runningSMIRFSoup != null) { 
+								out.println(runningSMIRFSoup.getValue0());
+							}
+							else {
+								out.println("none");
+							}
+							
+							log("sending ", runningSMIRFSoup != null ? runningSMIRFSoup.getValue0() : "none", "to",socket.getInetAddress().getHostName()  );
+						}
+
+						out.flush();
+						out.close();
+
+
+					}catch (Exception e) {
+						e.printStackTrace();
+					}finally {
+				
+						if(socket !=null) socket.close();
+
+					}
+
+
+				}
+
+
+			}catch (Exception e) {
+				e.printStackTrace();
+			}finally {
+				try {
+					listener.close();
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+			}
+
+		}
+	});
 
 
 
@@ -288,6 +536,7 @@ public class Nepenthes{
 			public void run() {
 				log("Preparing shutdown...");
 				shutdown = true;
+				if(runningWatchDog !=null && runningWatchDog.getValue1()!=null) runningWatchDog.getValue1().destroyProcess();
 				while(SMIRFSoupManager.isAlive());
 			}
 		}));
@@ -337,7 +586,10 @@ public class Nepenthes{
 				}
 
 			}
+			if(shutdown) break;
+
 		}
+		if(shutdown) return null;
 
 		String cmd = commandLine.getExecutable() + " ";
 		for(String s: Arrays.asList(commandLine.getArguments())) cmd += s + " ";
@@ -364,6 +616,8 @@ public class Nepenthes{
 		MyExecuteResultHandler resultHandler =  new MyExecuteResultHandler();
 
 		executor.execute(commandLine, env, resultHandler);
+		
+		runningWatchDog = new Pair<String, ExecuteWatchdog>(utc, watchDog);
 
 		return resultHandler;
 	}
@@ -384,7 +638,7 @@ public class Nepenthes{
 
 
 	public static synchronized void log(Object...any){
-		String s = "Nepenthes on (" + thisHost + ":" + thisPort + ") : ";
+		String s = "Nepenthes on (" + thisHost + ") : ";
 
 		for(Object o : any) 	s += o.toString() + " ";
 
