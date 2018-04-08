@@ -46,7 +46,7 @@
 			<manifest>
 				<attribute name="Main-Class" value="${main-class}" />
 				<attribute name="Class-Path" value="${manifest.classpath}" />
-			</manifest>
+			</manifest> 
 			<fileset dir="${class.dir}" includes="**/.class"></fileset>
 			<zipgroupfileset dir="${lib.dir}" includes="**/*.jar"></zipgroupfileset>
 		</jar>
