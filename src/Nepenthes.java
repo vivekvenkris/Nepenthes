@@ -1,26 +1,29 @@
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileFilter;
 import java.io.FileWriter;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.ObjectOutputStream;
 import java.io.PrintWriter;
 import java.net.Inet4Address;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
@@ -33,7 +36,6 @@ import org.apache.commons.exec.DefaultExecutor;
 import org.apache.commons.exec.ExecuteWatchdog;
 import org.apache.commons.exec.ProcessDestroyer;
 import org.apache.commons.exec.ShutdownHookProcessDestroyer;
-import org.apache.commons.exec.Watchdog;
 import org.apache.commons.exec.environment.EnvironmentUtils;
 import org.javatuples.Pair;
 
@@ -45,7 +47,7 @@ public class Nepenthes{
 
 	static boolean simulate = Boolean.parseBoolean( ConfigManager4Nepenthes.getSmirfMap().get("SIMULATE"));
 
-	static String utcAddPrefix = ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_UTC_PREFIX");
+	static String utcAddPrefix = ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_UTC_PREFIX"); 
 	static String end= ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_END"); 
 	static String rsync= ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_RSYNC_PREFIX");
 	static String srcName = ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_SRCNAME_PREFIX");
@@ -56,11 +58,13 @@ public class Nepenthes{
 	static Integer basePort = Integer.parseInt(ConfigManager4Nepenthes.getMopsrMap().get("SMIRF_NEPENTHES_SERVER"));
 	static Integer interNepenthesBasePort = Integer.parseInt(ConfigManager4Nepenthes.getMopsrMap().get("SMIRF_INTER_NEPENTHES_SERVER"));
 
-
-
 	static String pointsFileNameSuffix = ConfigManager4Nepenthes.getSmirfMap().get("POINTS_FILE_EXT");
 	static String rsyncFileNameSuffix = ConfigManager4Nepenthes.getSmirfMap().get("RSYNC_FILE_EXT");
 	static String srcNameFileNameSuffix = ConfigManager4Nepenthes.getSmirfMap().get("SRCNAME_FILE_EXT");
+	
+	static String smirfsoupOut = ConfigManager4Nepenthes.getSmirfMap().get("SMIRFSOUP_OUT");
+	static String fbDir = ConfigManager4Nepenthes.getSmirfMap().get("FB_DIR");
+	static String beamProcessorPrefix = ConfigManager4Nepenthes.getSmirfMap().get("BEAM_PROCESSOR_PREFIX");
 
 	static Integer server;
 
@@ -179,10 +183,100 @@ public class Nepenthes{
 
 				try {
 
-					PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
 					BufferedReader in = new BufferedReader( new InputStreamReader(socket.getInputStream()));
 					String input = in.readLine();
+					
 
+					/**
+					 * If asked for a list of UTCs to search at /data/mopsr/rawdata then do that 
+					 * 
+					 * This uses objectstream to send a map object. Should be done before a regular print stream is opened.
+					 */
+					
+					if(input.contains(ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_CHECK_DIRS"))){
+						
+						System.err.println("Checking directories for unfinished SMIRFsoups");
+						
+						Map<String, Set<String>> utcBPSetMap = new HashMap<>();
+						
+						File rawdata = new File(ConfigManager4Nepenthes.getMopsrMap().get("CLIENT_RECORDING_DIR"));
+						
+						System.err.println("rawdata:" + rawdata.getAbsolutePath());
+						
+						File[] bps = rawdata.listFiles(new FileFilter() {
+							
+							@Override
+							public boolean accept(File pathname) {
+								return pathname.isDirectory() && pathname.getName().startsWith(ConfigManager4Nepenthes.getSmirfMap().get("BEAM_PROCESSOR_PREFIX"));
+							}
+						});
+						
+						System.err.println("bps:" + Arrays.asList(bps).stream().map(f-> f.getName()).collect(Collectors.toList()));
+
+						
+						for(File bp: bps) {
+							
+							File[] utcs = bp.listFiles( new FileFilter() {
+								
+								@Override
+								public boolean accept(File pathname) {
+									return pathname.isDirectory() && pathname.getName().startsWith("20");
+								}
+							});
+							
+							for (File utc: utcs){
+								
+								File obs_completed =  new File(Utilities.createDirectoryStructure(utc.getAbsolutePath(),
+										ConfigManager4Nepenthes.getSmirfMap().get("FB_DIR"), ConfigManager4Nepenthes.getSmirfMap().get("SMIRFSOUP_TRIGGER")));
+								
+								File obs_peasouped =  new File(Utilities.createDirectoryStructure(utc.getAbsolutePath(),
+										ConfigManager4Nepenthes.getSmirfMap().get("FB_DIR"), ConfigManager4Nepenthes.getSmirfMap().get("SMIRFSOUP_OUT")));
+								
+								File[] beam_dirs = new File(Utilities.createDirectoryStructure(utc.getAbsolutePath(),
+										ConfigManager4Nepenthes.getSmirfMap().get("FB_DIR"))).listFiles(new FileFilter() {
+										 	
+											@Override
+											public boolean accept(File pathname) {
+												return pathname.isDirectory() && pathname.getName().startsWith("BEAM_");
+											}
+										});
+								
+								if(obs_completed.exists() && !obs_peasouped.exists() && beam_dirs.length > 0 ) {
+									
+									Set<String> utcsForBP = utcBPSetMap.getOrDefault(bp.getName(), new LinkedHashSet<>());
+									utcsForBP.add(utc.getName());
+									utcBPSetMap.put(bp.getName(), utcsForBP); 
+									
+								}
+								
+
+								
+							}
+							
+						}
+						
+						System.err.println(utcBPSetMap);
+						
+					    final ObjectOutputStream mapOutputStream = new ObjectOutputStream(socket.getOutputStream());
+					    mapOutputStream.writeObject(utcBPSetMap);
+					    mapOutputStream.close();
+						in.close();
+
+						continue;
+					}
+					
+					
+					PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+
+
+					/**
+					 * If asked for UTC queue size, return size and exit.
+					 */ 
+					
+					System.err.println("Input: " + input);
+					
+					System.err.println(ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_CHECK_DIRS"));
+					
 					if(input.contains(ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_STATUS_PREFIX"))){
 						synchronized (utcsToSearch) {
 							out.println(utcsToSearch.size());
@@ -191,6 +285,23 @@ public class Nepenthes{
 						in.close();
 
 					}
+					
+					/**
+					 * If asked for list of UTC on queue, send that and exit.
+					 */
+					
+					else if(input.contains(ConfigManager4Nepenthes.getSmirfMap().get("NEPENTHES_UTC_LIST_PREFIX"))){
+						synchronized (utcsToSearch) {
+							out.println(String.join(" ", utcsToSearch));
+						}
+						out.close();
+						in.close();
+
+					}
+					
+					/**
+					 * If asked to remove a UTC from list, send error if the UTC is running, if not, remove it from the list.
+					 */
 
 					else if(input.contains(removeUTCPrefix)){
 
@@ -266,7 +377,7 @@ public class Nepenthes{
 							bw.write(input);
 							bw.newLine();
 							bw.flush();
-						}
+						} 
 
 						bw.close();
 
@@ -345,6 +456,12 @@ public class Nepenthes{
 						if(runningSMIRFSoup != null && runningSMIRFSoup.getValue1().isComplete()) {
 							removeUTC = runningSMIRFSoup.getValue0();
 							System.err.println(runningSMIRFSoup.getValue0() + " " + runningSMIRFSoup.getValue1().status );
+//							try {
+//								retouchObsPeasoupedforUTC(runningSMIRFSoup.getValue0());
+//							} catch (IOException e) {
+//								System.err.println("Could not retouch.. shutting down");
+//								break;
+//							}
 							runningSMIRFSoup = null;	
 						}
 
@@ -620,6 +737,40 @@ public class Nepenthes{
 		runningWatchDog = new Pair<String, ExecuteWatchdog>(utc, watchDog);
 
 		return resultHandler;
+	}
+	
+	@Deprecated
+	static void retouchObsProcessingforUTC(String utc) throws IOException{
+		File baseDir = new File(archivesBase);
+		File bpDirs[] = baseDir.listFiles(new FilenameFilter() {
+			
+			@Override
+			public boolean accept(File dir, String name) {
+				return dir.isDirectory() && name.startsWith(beamProcessorPrefix);
+			}
+		});
+		for (File bpDir: bpDirs){
+			File utcDir = null;
+			if((utcDir = new File(bpDir, utc)).exists()){
+				File fbDir = new File(utcDir,Nepenthes.fbDir);
+				File obsFile = null;
+				if((obsFile = new File(fbDir, smirfsoupOut)).exists()){
+					System.err.println("Recheck: " + obsFile.getAbsolutePath() + "exists");
+				}
+				else{
+					System.err.println(obsFile.getAbsolutePath() + " did not exist. creating on Nepenthes again");
+					try {
+						obsFile.createNewFile(); 
+					} catch (IOException e) {
+						System.err.println("Could not create new file: " + obsFile.getAbsolutePath());
+						e.printStackTrace();
+						throw e;
+					}
+					
+				}
+			}
+		}
+		
 	}
 
 	public static void help(Options options){
