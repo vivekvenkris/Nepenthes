@@ -19,5 +19,9 @@ public class MyExecuteResultHandler implements ExecuteResultHandler {
 	public boolean isComplete(){
 		return !status.equals("running");
 	}
+	
+	public boolean hasfailed(){
+		return status.equals("fail");
+	}
 
 }
