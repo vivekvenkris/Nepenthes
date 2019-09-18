@@ -52,7 +52,7 @@ public class ConfigManager4Nepenthes {
 
 	public static void main(String[] args) throws IOException {
 		thisHost = "mpsr-bf00"; removeDomain(InetAddress.getLocalHost().getHostName());
-		loadConfigs();
+		//loadConfigs();
 	}
 
 

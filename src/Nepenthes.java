@@ -13,6 +13,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -68,7 +69,9 @@ public class Nepenthes{
 
 	static Integer server;
 
+	static String staticBirdiesFile = ConfigManager4Nepenthes.getSmirfMap().get("STATIC_BIRDIES");
 
+	
 
 	static final LinkedList<String> utcsToSearch = new LinkedList<>(); 
 	
@@ -174,6 +177,8 @@ public class Nepenthes{
 			listener = new ServerSocket(port);
 
 			log("Nepenthes listening on port" ,port);
+			
+			log("Version: After avalanche connection refused fix. ");
 
 			while (!shutdown) {
 
@@ -456,12 +461,6 @@ public class Nepenthes{
 						if(runningSMIRFSoup != null && runningSMIRFSoup.getValue1().isComplete()) {
 							removeUTC = runningSMIRFSoup.getValue0();
 							System.err.println(runningSMIRFSoup.getValue0() + " " + runningSMIRFSoup.getValue1().status );
-//							try {
-//								retouchObsPeasoupedforUTC(runningSMIRFSoup.getValue0());
-//							} catch (IOException e) {
-//								System.err.println("Could not retouch.. shutting down");
-//								break;
-//							}
 							runningSMIRFSoup = null;	
 						}
 
@@ -484,10 +483,14 @@ public class Nepenthes{
 						log("Considering",nextUTC,"for SMIRFsouping");
 
 						log("Asking other nodes for their status");
+						
+						boolean allBSesOkay = true;
 
 						for(Entry<String, Map<Integer, Integer>> nodeBSEntry : ConfigManager4Nepenthes.getInterNepenthesServers().entrySet()){
 
 							String node = nodeBSEntry.getKey();
+							
+							boolean allNodesOkay = true;
 
 							for(Entry<Integer, Integer> bsPortEntry : nodeBSEntry.getValue().entrySet()){
 
@@ -499,7 +502,9 @@ public class Nepenthes{
 								}
 								 
 								log("Checking BS",bsPortEntry.getKey(),"on port", port);
-
+								
+								boolean nodeOkay = true;
+								
 								while(true) { 
 
 									Socket socket = null;
@@ -533,6 +538,9 @@ public class Nepenthes{
 									} catch (IOException | InterruptedException e) {
 										
 										e.printStackTrace();
+										log("Connection to BS" + bsPortEntry.getKey() + " failed. Possible node failure. Aborting");
+										nodeOkay = false;
+										break;
 										
 									} finally{
 										
@@ -540,37 +548,43 @@ public class Nepenthes{
 											try {
 												socket.close();
 											} catch (IOException e) {
+												log("Sockdet close to BS" + bsPortEntry.getKey() + " failed. Possible node failure. Aborting");
+												nodeOkay = false;
 												e.printStackTrace();
 											}
 									} // try catch finally
 									
 								} // while(true)
-
-
+								if(!nodeOkay) allNodesOkay = false;
+ 
 							} // bs-port map
-
+							if(!allNodesOkay) allBSesOkay = false;
 
 						} // node - bs - port map 
 
-						MyExecuteResultHandler resultHandler = null;
-
-						try {
-							resultHandler = startSMIRFSoupForUTC(nextUTC); 
-						} catch (IOException e) { 
-							e.printStackTrace();
+						if(allBSesOkay) {
+							
+							MyExecuteResultHandler resultHandler = null;
+	
+							try {
+								resultHandler = startSMIRFSoupForUTC(nextUTC); 
+							} catch (IOException e) { 
+								e.printStackTrace();
+							}
+	
+							synchronized (runningSMIRFsoupLock) {
+								runningSMIRFSoup = new Pair<String, MyExecuteResultHandler>(nextUTC, resultHandler);
+	
+							}
 						}
-
-						synchronized (runningSMIRFsoupLock) {
-							runningSMIRFSoup = new Pair<String, MyExecuteResultHandler>(nextUTC, resultHandler);
+						else {
+							log("Shutting down until problem is manually solved.");
+							shutdown = true;
 
 						}
 					}
 				} 
-				try {
-					Thread.sleep(1000);
-				} catch (InterruptedException e) {
-					e.printStackTrace();
-				}
+				try { Thread.sleep(1000); } catch (InterruptedException e) { e.printStackTrace(); }
 			}
 		}
 	});
@@ -672,9 +686,17 @@ public class Nepenthes{
 		commandLine.addArgument(archivesBase); 
 		commandLine.addArgument("-b");
 		commandLine.addArgument(bsID+"");
+		
+		List<String> strings = Files.readAllLines(new File(staticBirdiesFile).toPath());
+		if(!strings.isEmpty()) {
+			commandLine.addArgument("-z");
+			commandLine.addArgument(staticBirdiesFile+"");
+		}
+		 
 
 
 		log("Waiting for obs.completed on all BP dirs");
+		
 
 		for(String bp: ConfigManager4Nepenthes.getThisBeamProcessorDirs()){
 			String bpDirectoryName = Utilities.createDirectoryStructure(archivesBase, bp, utc, ConfigManager4Nepenthes.getSmirfMap().get("FB_DIR"));
